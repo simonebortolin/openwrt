@@ -100,13 +100,16 @@ proto_map_setup() {
 				json_close_array
 			fi
 		json_close_object
-
-
 		proto_close_tunnel
 	elif [ "$maptype" = "map-t" -a -f "/proc/net/nat46/control" ]; then
 		proto_init_update "$link" 1
+
 		local style="MAP"
 		[ "$legacymap" = 1 ] && style="MAP0"
+		json_add_int mtu "1500"
+		if [[ $(( $(eval "echo \$RULE_${k}_PREFIX4LEN") + $(eval "echo \$RULE_${k}_EALEN") )) == 32 ]] && [[ $(eval "echo \$RULE_COUNT") = 1 ]]; then
+			proto_add_ipv4_address $(eval "echo \$RULE_${k}_IPV4ADDR") "" "" ""
+		fi
 
 		echo add $link > /proc/net/nat46/control
 		local cfgstr="local.style $style local.v4 $(eval "echo \$RULE_${k}_IPV4PREFIX")/$(eval "echo \$RULE_${k}_PREFIX4LEN")"
@@ -122,6 +125,7 @@ proto_map_setup() {
 			cfgstr="$cfgstr remote.ea-len $(eval "echo \$RULE_${i}_EALEN") remote.psid-offset $(eval "echo \$RULE_${i}_OFFSET")"
 			echo insert $link $cfgstr > /proc/net/nat46/control
 		done
+
 	else
 		proto_notify_error "$cfg" "UNSUPPORTED_TYPE"
 		proto_block_restart "$cfg"
@@ -129,34 +133,94 @@ proto_map_setup() {
 
 	proto_add_ipv4_route "0.0.0.0" 0
 	proto_add_data
+
+	# Store configuration in data.map obj
+	json_add_object "map"
+	json_add_string "map-type" "$maptype"
+	json_add_int bmr $(eval "echo \$RULE_BMR")
+
+	# Compatibility fields with lw4o6 and map-e
+	# Extract data from Basic Mapping Rule
+	json_add_string local $(eval "echo \$RULE_${k}_IPV6ADDR")
+	if [ -n "$(eval "echo \$RULE_${k}_BR")" ]; then
+		json_add_string remote $(eval "echo \$RULE_${k}_BR")
+	else
+		json_add_string remote $(eval "echo \$RULE_${i}_DMR | cut -d '/' -f 1")
+	fi
+	json_add_string link $(eval "echo \$RULE_${k}_PD6IFACE")
+
+	json_add_array rule
+		for i in $(seq $RULE_COUNT); do
+			json_add_object ""
+			json_add_boolean fmr $(eval "echo \$RULE_${i}_FMR")
+			json_add_int "ea-len" $(eval "echo \$RULE_${i}_EALEN")
+			json_add_int "psid-len" $(eval "echo \$RULE_${i}_PSIDLEN")
+			json_add_int "psid-offset" $(eval "echo \$RULE_${i}_OFFSET")
+
+			json_add_object "ipv4-prefix"
+			json_add_string address $(eval "echo \$RULE_${i}_IPV4PREFIX")
+			json_add_int mask $(eval "echo \$RULE_${i}_PREFIX4LEN")
+			json_close_object
+
+			json_add_object "ipv6-prefix"
+			json_add_string address $(eval "echo \$RULE_${i}_IPV6PREFIX")
+			json_add_int mask $(eval "echo \$RULE_${i}_PREFIX6LEN")
+			json_close_object
+
+			json_add_object "ipv4-address"
+			json_add_string address $(eval "echo \$RULE_${i}_IPV4ADDR")
+			json_add_int mask $(eval "echo \$RULE_${i}_ADDR4LEN")
+			json_close_object
+
+			json_add_object "ipv6-address"
+			json_add_string address $(eval "echo \$RULE_${i}_IPV6ADDR")
+			json_add_int mask $(eval "echo \$RULE_${i}_PD6LEN")
+			json_close_object
+
+			if [ -n "$(eval "echo \$RULE_${i}_DMR")" ]; then
+				json_add_object "dmr-addres"
+				json_add_string address $(eval "echo \$RULE_${i}_DMR | cut -d '/' -f 1")
+				json_add_int mask $(eval "echo \$RULE_${i}_DMR | cut -d '/' -f 2")
+				json_close_object
+			fi
+
+			json_add_array "port-set"
+				for portset in $(eval "echo \$RULE_${i}_PORTSETS"); do
+					json_add_string "" "$portset"
+				done
+			json_close_array
+			json_close_object
+		done
+	json_close_array
+	json_close_object
+
 	[ -n "$zone" ] && json_add_string zone "$zone"
 
 	json_add_array firewall
-	  if [ -z "$(eval "echo \$RULE_${k}_PORTSETS")" ]; then
-	    json_add_object ""
-	      json_add_string type nat
-	      json_add_string target SNAT
-	      json_add_string family inet
-	      json_add_string snat_ip $(eval "echo \$RULE_${k}_IPV4ADDR")
-	    json_close_object
-	  else
-	    for portset in $(eval "echo \$RULE_${k}_PORTSETS"); do
-              for proto in icmp tcp udp; do
-	        json_add_object ""
-	          json_add_string type nat
-	          json_add_string target SNAT
-	          json_add_string family inet
-	          json_add_string proto "$proto"
-                  json_add_boolean connlimit_ports 1
-                  json_add_string snat_ip $(eval "echo \$RULE_${k}_IPV4ADDR")
-                  json_add_string snat_port "$portset"
-	        json_close_object
-              done
-	    done
-	  fi
-	  if [ "$maptype" = "map-t" ]; then
+	if [ -z "$(eval "echo \$RULE_${k}_PORTSETS")" ]; then
+		json_add_object ""
+		json_add_string type nat
+		json_add_string target SNAT
+		json_add_string family inet
+		json_add_string snat_ip $(eval "echo \$RULE_${k}_IPV4ADDR")
+		json_close_object
+	else
+		for portset in $(eval "echo \$RULE_${k}_PORTSETS"); do
+			for proto in icmp tcp udp; do
+				json_add_object ""
+				json_add_string type nat
+				json_add_string target SNAT
+				json_add_string family inet
+				json_add_string proto "$proto"
+				json_add_boolean connlimit_ports 1
+				json_add_string snat_ip $(eval "echo \$RULE_${k}_IPV4ADDR")
+				json_add_string snat_port "$portset"
+				json_close_object
+			done
+		done
+	fi
+	if [ "$maptype" = "map-t" ]; then
 		[ -z "$zone" ] && zone=$(fw3 -q network $iface 2>/dev/null)
-
 		[ -n "$zone" ] && {
 			json_add_object ""
 				json_add_string type rule
@@ -180,7 +244,7 @@ proto_map_setup() {
 			json_close_object
 		}
 		proto_add_ipv6_route $(eval "echo \$RULE_${k}_IPV6ADDR") 128
-	  fi
+	fi
 	json_close_array
 	proto_close_data
 
