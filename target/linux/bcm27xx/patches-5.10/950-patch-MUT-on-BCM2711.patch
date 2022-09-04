@@ -1,0 +1,55 @@
+From f78a15dcaf63a5ad478670fd1d52d85261e88f37 Mon Sep 17 00:00:00 2001
+From: Simone Bortolin <info@simonebortolin.it>
+Date: Sun, 4 Sep 2022 15:15:36 +0000
+Subject: [PATCH] ARM: MTU 9000 on Raspberyy PI BCM2711
+
+Patch for MTU 9000 on Raspberry PI
+
+https://github.com/geerlingguy/raspberry-pi-pcie-devices/issues/40#issuecomment-749813206
+https://forums.raspberrypi.com/viewtopic.php?p=1665692&sid=587e1d5ea3a34c19ba8b0b1addce0ac4#p1665692
+
+Signed-off-by: Simone Bortolin <info@simonebortolin.it>
+
+diff --git a/drivers/net/ethernet/broadcom/genet/bcmgenet.c b/drivers/net/ethernet/broadcom/genet/bcmgenet.c
+index 62051e353278..81e3da888d1a 100644
+--- a/drivers/net/ethernet/broadcom/genet/bcmgenet.c
++++ b/drivers/net/ethernet/broadcom/genet/bcmgenet.c
+@@ -52,7 +52,7 @@
+ #define GENET_Q16_TX_BD_CNT	\
+ 	(TOTAL_DESC - priv->hw_params->tx_queues * priv->hw_params->tx_bds_per_q)
+ 
+-#define RX_BUF_LENGTH		2048
++#define RX_BUF_LENGTH		10240
+ #define SKB_ALIGNMENT		32
+ 
+ /* Tx/Rx DMA register offset, skip 256 descriptors */
+diff --git a/include/linux/if_vlan.h b/include/linux/if_vlan.h
+index 41a518336673..28cac902cb77 100644
+--- a/include/linux/if_vlan.h
++++ b/include/linux/if_vlan.h
+@@ -22,8 +22,8 @@
+ /*
+  * According to 802.3ac, the packet can be 4 bytes longer. --Klika Jan
+  */
+-#define VLAN_ETH_DATA_LEN	1500	/* Max. octets in payload	 */
+-#define VLAN_ETH_FRAME_LEN	1518	/* Max. octets in frame sans FCS */
++#define VLAN_ETH_DATA_LEN	9000	/* Max. octets in payload	 */
++#define VLAN_ETH_FRAME_LEN	9018	/* Max. octets in frame sans FCS */
+ 
+ #define VLAN_MAX_DEPTH	8		/* Max. number of nested VLAN tags parsed */
+ 
+diff --git a/include/uapi/linux/if_ether.h b/include/uapi/linux/if_ether.h
+index d6de2b167448..78a12dd0e542 100644
+--- a/include/uapi/linux/if_ether.h
++++ b/include/uapi/linux/if_ether.h
+@@ -33,8 +33,8 @@
+ #define ETH_TLEN	2		/* Octets in ethernet type field */
+ #define ETH_HLEN	14		/* Total octets in header.	 */
+ #define ETH_ZLEN	60		/* Min. octets in frame sans FCS */
+-#define ETH_DATA_LEN	1500		/* Max. octets in payload	 */
+-#define ETH_FRAME_LEN	1514		/* Max. octets in frame sans FCS */
++#define ETH_DATA_LEN	9000		/* Max. octets in payload	 */
++#define ETH_FRAME_LEN	9014		/* Max. octets in frame sans FCS */
+ #define ETH_FCS_LEN	4		/* Octets in the FCS		 */
+ 
+ #define ETH_MIN_MTU	68		/* Min IPv4 MTU per RFC791	*/
