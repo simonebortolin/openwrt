@@ -11,11 +11,10 @@ PKG_NAME:=odhcp6c
 PKG_RELEASE:=20
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL=$(PROJECT_GIT)/project/odhcp6c.git
-PKG_SOURCE_DATE:=2023-05-12
-PKG_SOURCE_VERSION:=bcd283632ac13391aac3ebdd074d1fd832d76fa3
-PKG_MIRROR_HASH:=0f3508a5a148ca831ae30b49b21919535f9dfbbd003a942baa6cb5388d207878
-PKG_MAINTAINER:=Hans Dedecker <dedeckeh@gmail.com>
+PKG_SOURCE_URL=https://github.com/edofullin/odhcp6c.git
+PKG_SOURCE_DATE:=2022-04-24
+PKG_SOURCE_VERSION:=e89a5a16644a7ed5c58a2982dbae4f3e246526ca
+PKG_MAINTAINER:=edofullin <edoardo.fullin@outlook.com>
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk
