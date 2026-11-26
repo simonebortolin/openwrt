@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * ZTE F6005 (CIG G-97CP) GPON ONU — Realtek RTL9601D.
+ * 32 MB DDR2, 16 MB SPI-NOR (CIG dual-bank cramfs), 1× 2.5GBase-T
+ * (RTL8226B-VB PHY on HiSGMII), GPON MAC RTL8686.
+ *
+ * ODM: CIG (product code G-97CP); same plastic shell as the Nokia G-010G-T.
+ * The 2.5GBase-T PHY (RTL8226B-VB) connects via HiSGMII to the SoC's
+ * SerDes uplink — the mainline rtl822x PHY driver handles it once the
+ * SerDes + analog patch bring-up sequence is in luna_eth.c.
+ *
+ * Clean-room: board description from observed hardware only (serial console,
+ * U-Boot printenv, CIG bootloader TFTP traces on hack-gpon.org).
+ *
+ * Copyright (C) 2026 Simone Bortolin
+ */
+
+/dts-v1/;
+
+#include "rtl9602c.dtsi"
+
+/* The RTL9601D runs the RTL9602C platform map: its own stock kernel (k1,
+ * Linux 2.6.30.9) programs the same UART, INTC, timer, watchdog, UMSAR and
+ * NIC blocks and never the PCIe host block, hence no "realtek,rtl9602c" root
+ * compatible (pcie-luna keys on it). */
+/ {
+	model = "ZTE F6005 (RTL9601D, console bring-up)";
+	compatible = "zte,f6005", "realtek,rtl9601d";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* Same SoC and RAM size as the X100DG: two spans with PON packet pool
+	 * holes.  Values from the X100DG's stock kernel (same 32 MB die); the
+	 * F6005's own MSTBASE_DS/US need verification from its live registers. */
+	memory@0 {
+		device_type = "memory";
+		reg = <0x00000000 0x016ff000>, <0x01800000 0x006ff000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		pbo_ds: stock-reserved@16ff000 {
+			no-map;
+			reg = <0x016ff000 0x00101000>;
+		};
+
+		pbo_us: stock-reserved@1eff000 {
+			no-map;
+			reg = <0x01eff000 0x00101000>;
+		};
+	};
+
+	/* The internal BOSA (MENTECHOPTO-class): its laser is controlled by the
+	 * GPON MAC, not host GPIO — the same self-managed pattern as the V2801RGW.
+	 * No RTL8290B or GN25L95 laser calibration symbol in the stock firmware.
+	 *
+	 * TODO(bring-up): read the stock firmware's device_api gpio_pads to get the
+	 * realtek,gpio-pads values for this board.  Without them the PON analog
+	 * front end may not initialise correctly and the ONU will not range. */
+	pon-optics {
+		realtek,optics-self-managed;
+	};
+
+	#include "rtl9601d_f6005-omci-uni.dtsi"
+};
+
+/* 32 MB RAM: same ring limit as the X100DG (256 entries, ~600 KB).
+ * The 2.5GBase-T PHY (RTL8226B-VB) is on the SoC's SerDes uplink at MDIO
+ * address 6 — the luna_eth.c rtl8221b_phy path handles its reset release;
+ * the full HiSGMII + analog patch sequence is the next bring-up step. */
+&nic {
+	realtek,rx-ring-entries = <256>;
+	/* TODO(bring-up): verify the WAN MAC offset from this board's stock
+	 * nas0_0 MAC address (X100DG = +1, V2801RGW = +5). */
+	realtek,wan-mac-offset = <1>;
+};
+
+/* CIG dual-bank 16 MiB SPI-NOR.  The CIG bootloader (CIG_bu.en_V3.09.15)
+ * stores two cramfs images: Image A at 0x200000 (7 MiB, `upgdimage` target)
+ * and Image B at 0x900000 (7 MiB).  U-Boot env `activeimage` selects which
+ * bank boots; the bootloader extracts /uImage from the cramfs and bootm's it.
+ *
+ * OpenWrt lays one bank inside Image A (k0 + r0 + crashlog, 7 MiB), preserving
+ * Image B with stock firmware for recovery.  The first bring-up is TFTP + bootm;
+ * the persistent install needs a cramfs wrapper (the CIG bootloader will not
+ * read a bare uImage+squashfs). */
+&spi_nor {
+	reg = <0x14000000 0x1000000>, <0x18001200 0x10>;
+	erase-size = <0x10000>;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "boot";
+			reg = <0x000000 0x030000>;	/* 192K CIG bootloader */
+			read-only;
+		};
+		partition@30000 {
+			label = "env";
+			reg = <0x030000 0x010000>;	/* 64K U-Boot env */
+			read-only;
+		};
+		partition@40000 {
+			label = "config";
+			reg = <0x040000 0x1c0000>;	/* factory/identity: GPON SN, MAC */
+			read-only;
+		};
+		partition@200000 {
+			label = "k0";
+			reg = <0x200000 0x230000>;	/* 2240K kernel (Image A area) */
+		};
+		partition@430000 {
+			label = "r0";
+			reg = <0x430000 0x4b0000>;	/* 4800K rootfs + rootfs_data */
+			linux,rootfs;
+		};
+		partition@8e0000 {
+			label = "crashlog";
+			reg = <0x8e0000 0x020000>;	/* 128K, mtdoops (crashlog arm) */
+		};
+		partition@900000 {
+			label = "imageb";
+			reg = <0x900000 0x700000>;	/* 7M stock Image B, recovery */
+			read-only;
+		};
+	};
+};
+
+/* US then DS, as luna_gpon reads them.
+ * TODO(bring-up): the LED indices and port map need to be read from the F6005's
+ * stock firmware capture (board_01_led_init, pon_led_*_spec_type, the
+ * "others"/LOS spec init).  The values below are from the X100DG (same SoC)
+ * as a starting point and are LIKELY WRONG for this board. */
+&gpon {
+	memory-region = <&pbo_us>, <&pbo_ds>;
+	realtek,pon-led = <6>;
+	realtek,los-led = <15>;
+	realtek,port-leds = <1 2>;
+};

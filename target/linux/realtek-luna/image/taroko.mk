@@ -66,6 +66,29 @@ define Device/vsol_v2801rgw
 endef
 TARGET_DEVICES += vsol_v2801rgw
 
+define Device/zte_f6005
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := F6005
+  DEVICE_DTS := rtl9601d_f6005
+  DEVICE_DTS_DIR := $(DTS_DIR)/realtek-luna
+  SOC := rtl9601d
+  # CIG dual-bank on 16 MiB SPI-NOR: Image A (0x200000–0x900000, 7 MiB), Image B preserved.
+  # 32 MB of RAM cannot unpack a 10 MB initramfs (same as the X100DG): phram dev loop.
+  #   k0 = 0x230000 (2240k) at 0x200000, r0 = 0x4b0000 (4800k) at 0x430000, the 128k crashlog at 0x8e0000.
+  # The CIG bootloader (CIG_bu.en_V3.09.15) expects cramfs at the active image offset;
+  # bring-up is TFTP + bootm, so the cramfs wrapper is not yet needed.
+  KERNEL_SIZE := $(call flash_kernel_size,2240k)
+  IMAGE_SIZE := 4800k
+  IMAGES := kernel.bin rootfs.bin sysupgrade.bin
+  IMAGE/kernel.bin := append-kernel | check-size $$(KERNEL_SIZE)
+  IMAGE/rootfs.bin := append-rootfs | check-size
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | check-size | sysupgrade-tar rootfs=$$$$@ | append-metadata
+  # No WiFi; the 2.5GBase-T PHY (RTL8226B-VB) needs luna_eth.c's HiSGMII path.
+  # gpon-provision: its SN, MAC and identity live in the config partition.
+  DEVICE_PACKAGES := -iw gpon-provision
+endef
+TARGET_DEVICES += zte_f6005
+
 define Device/hsgq_x100dg
   DEVICE_VENDOR := HSGQ
   DEVICE_MODEL := X100DG
