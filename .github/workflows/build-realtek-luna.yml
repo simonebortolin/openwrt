@@ -1,4 +1,23 @@
-name: Build realtek-luna firmware
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Compiler validation for the RLX/Lexra "Taroko" core (realtek-luna/taroko).
+#
+# The Taroko is NOT standard MIPS.  It lacks trap instructions (teq/tne/...),
+# has a branch-delay-slot erratum with three-operand mul (990-mips-fix-rlx),
+# and an MDU erratum that -fno-schedule-insns2 mitigates.  A binary that
+# builds clean and links clean will trap on the device if any of these slip
+# through -- which is why the ISA audit and the compiler flag checks are
+# build gates (exit non-zero), not reports.
+#
+# Jobs (most run in parallel):
+#   patch-check       the RLX GCC patch still exists and is non-empty
+#   build             toolchain + compiler-flag validation + kernel + ISA audit
+#
+# The full firmware image (packages + rootfs) builds only on tags and manual
+# runs: nothing in it exercises the compiler errata beyond what the kernel
+# already covers, and the kernel is what boots first.
+
+name: realtek-luna compiler validation
 
 on:
   push:
@@ -8,40 +27,82 @@ on:
       - main
     paths:
       - '.github/workflows/build-realtek-luna.yml'
+      - 'toolchain/**'
+      - 'tools/**'
       - 'target/linux/realtek-luna/**'
       - 'target/linux/gpon-common/**'
       - 'target/linux/eth-common/**'
       - 'package/gpon/**'
       - 'package/kernel/luna-*/**'
+      - 'include/**'
   pull_request:
     paths:
       - '.github/workflows/build-realtek-luna.yml'
+      - 'toolchain/**'
+      - 'tools/**'
       - 'target/linux/realtek-luna/**'
       - 'target/linux/gpon-common/**'
       - 'target/linux/eth-common/**'
       - 'package/gpon/**'
       - 'package/kernel/luna-*/**'
+      - 'include/**'
   workflow_dispatch:
-    inputs:
-      device:
-        description: 'Single device to build (empty = all taroko devices)'
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
 
+# A newer push to a pull request makes the build of the older one worthless,
+# so it is cancelled.  Every other run gets a group of its own (the run id).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: rlx-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Does the GCC RLX patch exist?  Seconds, no build, catches a rebase
+  # that dropped the patch before the 40-minute toolchain build starts.
+  patch-check:
+    name: GCC RLX patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 990-mips-fix-rlx.patch exists and is non-trivial
+        run: |
+          patch=toolchain/gcc/patches-14.x/990-mips-fix-rlx.patch
+          [ -f "$patch" ] || {
+            echo "FAIL: $patch missing -- the RLX erratum fix is gone" >&2
+            exit 1
+          }
+          lines=$(wc -l < "$patch")
+          [ "$lines" -gt 5 ] || {
+            echo "FAIL: $patch is only $lines lines -- truncated?" >&2
+            exit 1
+          }
+          echo "$(head -1 "$patch") ($lines lines)"
+
+      - name: taroko CFLAGS include the three RLX mitigations
+        run: |
+          mk=target/linux/realtek-luna/taroko/target.mk
+          for flag in -mfix-rlx -mdivide-breaks -fno-schedule-insns2; do
+            grep -q -- "$flag" "$mk" || {
+              echo "FAIL: $flag missing from $mk" >&2
+              exit 1
+            }
+          done
+          echo "taroko CFLAGS: $(grep '^CFLAGS' "$mk")"
+
+  # Build the cross-toolchain (the expensive part, cached), validate the
+  # compiler flags on small test programs, then build and audit the kernel.
   build:
-    name: realtek-luna / taroko
+    name: Toolchain + kernel (taroko)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Maximize disk space
         run: |
@@ -59,10 +120,24 @@ jobs:
             python3-setuptools rsync swig unzip zlib1g-dev file wget \
             python3-distutils-extra
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 1
+
+      # The toolchain is the expensive part (~40 min cold).  Cache it
+      # keyed on its own sources and the target config: a hit skips the
+      # build, a miss rebuilds from scratch.
+      - name: Cache toolchain
+        id: cache-tc
+        uses: actions/cache@v4
+        with:
+          path: |
+            staging_dir/host
+            staging_dir/toolchain-*
+            build_dir/host
+            build_dir/toolchain-*
+          key: tc-taroko-${{ runner.os }}-${{ hashFiles('toolchain/**', 'tools/**', 'include/toolchain-build.mk', 'target/linux/realtek-luna/taroko/target.mk') }}
 
       - name: Update and install feeds
         run: |
@@ -71,52 +146,233 @@ jobs:
 
       - name: Generate .config for realtek-luna/taroko
         run: |
-          cat > .config <<'CONF'
+          cat > .config <<'EOF'
           CONFIG_TARGET_realtek-luna=y
           CONFIG_TARGET_realtek-luna_taroko=y
           CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_ALL_PROFILES=y
           CONFIG_TARGET_PER_DEVICE_ROOTFS=y
-          CONF
-
-          # If a single device was requested, pin it
-          DEVICE="${{ github.event.inputs.device }}"
-          if [ -n "$DEVICE" ]; then
-            echo "CONFIG_TARGET_DEVICE_realtek-luna_taroko_DEVICE_${DEVICE}=y" >> .config
-          else
-            echo "CONFIG_TARGET_ALL_PROFILES=y" >> .config
-          fi
-
+          EOF
           make defconfig
 
       - name: Download sources
         run: make download -j8 V=s || make download -j1 V=s
 
-      - name: Build toolchain
+      # ---- Toolchain ----
+
+      - name: Build host tools
+        if: steps.cache-tc.outputs.cache-hit != 'true'
+        run: make tools/install -j$(nproc) V=s 2>&1 | tail -20
+
+      - name: Build cross-toolchain
+        if: steps.cache-tc.outputs.cache-hit != 'true'
         run: |
-          make tools/install -j$(nproc) V=s 2>&1 | tail -20
-          make toolchain/install -j$(nproc) V=s 2>&1 | tail -20
+          start=$(date +%s)
+          make toolchain/install -j$(nproc) V=s 2>&1 | tail -30
+          echo "TOOLCHAIN_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      # ---- RLX/Lexra compiler flag validation ----
+      # These run right after the toolchain, before the kernel: a broken
+      # compiler is caught in seconds instead of after a 30-minute build.
+
+      - name: Find cross-compiler
+        id: cc
+        run: |
+          CC=$(find staging_dir/toolchain-* -name 'mips-openwrt-linux-musl-gcc' -type f | head -1)
+          OD=$(find staging_dir/toolchain-* -name 'mips-openwrt-linux-musl-objdump' -type f | head -1)
+          [ -n "$CC" ] || { echo "cross-gcc not found" >&2; exit 1; }
+          [ -n "$OD" ] || { echo "cross-objdump not found" >&2; exit 1; }
+          echo "cc=$CC" >> "$GITHUB_OUTPUT"
+          echo "objdump=$OD" >> "$GITHUB_OUTPUT"
+          "$CC" --version | head -1
+
+      - name: "Flag check: GCC accepts -mfix-rlx"
+        env:
+          CC: ${{ steps.cc.outputs.cc }}
+        run: |
+          echo 'int f(void) { return 0; }' | "$CC" -mfix-rlx -xc - -S -o /dev/null
+          echo "OK: -mfix-rlx accepted"
+
+      - name: "Flag check: -mdivide-breaks emits break, not teq"
+        env:
+          CC: ${{ steps.cc.outputs.cc }}
+          OD: ${{ steps.cc.outputs.objdump }}
+        run: |
+          cat > /tmp/div-test.c <<'C'
+          volatile int a = 42, b = 7;
+          int main(void) { return a / b; }
+          C
+          "$CC" -Os -mips32 -mdivide-breaks -static -o /tmp/div-test /tmp/div-test.c
+          "$OD" -d /tmp/div-test > /tmp/div-test.dis
+
+          if grep -qw 'teq' /tmp/div-test.dis; then
+            echo "FAIL: teq found — -mdivide-breaks did not replace it" >&2
+            grep -n 'teq' /tmp/div-test.dis | head -5
+            exit 1
+          fi
+          if ! grep -q 'break' /tmp/div-test.dis; then
+            echo "FAIL: no break instruction for divide-by-zero" >&2
+            exit 1
+          fi
+          echo "OK: divide-by-zero uses break, not teq"
+
+      - name: "Flag check: -mfix-rlx keeps mul out of branch delay slots"
+        env:
+          CC: ${{ steps.cc.outputs.cc }}
+          OD: ${{ steps.cc.outputs.objdump }}
+        run: |
+          cat > /tmp/rlx-test.c <<'C'
+          int test(int a, int b, int c) {
+              int r = a * b;
+              if (r) return r + c;
+              return c;
+          }
+          int main(void) { return test(3, 4, 5); }
+          C
+          "$CC" -O2 -mips32 -mfix-rlx -static -o /tmp/rlx-test /tmp/rlx-test.c
+          "$OD" -d /tmp/rlx-test > /tmp/rlx-test.dis
+
+          # In MIPS disassembly the delay slot is the line right after a
+          # branch/jump.  A three-operand mul there is the erratum.
+          awk '
+            /\tb(ne|eq|gez|gtz|lez|ltz|al)/ || /\tj(|al|r|alr)\t/ {
+              is_branch = 1; bline = $0; next
+            }
+            is_branch && /\tmul\t/ {
+              printf "FAIL: mul in delay slot:\n  %s\n  %s\n", bline, $0
+              fail = 1
+            }
+            { is_branch = 0 }
+            END { exit fail ? 1 : 0 }
+          ' /tmp/rlx-test.dis
+          echo "OK: no mul in branch delay slots"
+
+      # ---- Kernel build ----
+
+      - name: Build kernel
+        run: |
+          start=$(date +%s)
+          make target/linux/compile -j$(nproc) V=s 2>&1 | tee /tmp/kernel-build.log | tail -40
+          echo "KERNEL_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: End of kernel build log
+        if: failure()
+        run: tail -80 /tmp/kernel-build.log 2>/dev/null || true
+
+      # ---- ISA audit: the build gate ----
+      # An instruction this CPU lacks links clean and traps on the device.
+
+      - name: "ISA audit: no trap instructions in vmlinux"
+        env:
+          OD: ${{ steps.cc.outputs.objdump }}
+        run: |
+          vmlinux=$(find build_dir/target-*/linux-*/linux-*/ -name vmlinux -type f 2>/dev/null | head -1)
+          [ -n "$vmlinux" ] || { echo "vmlinux not found" >&2; exit 1; }
+          echo "vmlinux: $vmlinux ($(stat -c %s "$vmlinux") bytes)"
+
+          "$OD" -d "$vmlinux" > /tmp/vmlinux.dis
+
+          # The RLX5281 Taroko core lacks the MIPS conditional-trap family.
+          # Any occurrence is a build-breaking bug: it traps RI on the device.
+          forbidden='teq|tne|tge|tgeu|tlt|tltu'
+          count=$(grep -cwE "$forbidden" /tmp/vmlinux.dis || true)
+
+          if [ "$count" -gt 0 ]; then
+            echo "FAIL: $count lines with forbidden trap instructions in vmlinux" >&2
+            echo
+            echo "By type:"
+            grep -owE "$forbidden" /tmp/vmlinux.dis | sort | uniq -c | sort -rn
+            echo
+            echo "First 20 occurrences:"
+            grep -nwE "$forbidden" /tmp/vmlinux.dis | head -20
+            exit 1
+          fi
+          echo "OK: 0 trap instructions in vmlinux"
+
+      # ---- Size and warning report ----
+
+      - name: Kernel size and warnings
+        run: |
+          vmlinux=$(find build_dir/target-*/linux-*/linux-*/ -name vmlinux -type f 2>/dev/null | head -1)
+          uimage=$(find build_dir/target-*/linux-*/linux-*/ -name uImage -type f 2>/dev/null | head -1)
+
+          vmsize=$(stat -c %s "$vmlinux" 2>/dev/null || echo 0)
+          usize=0
+          [ -z "$uimage" ] || usize=$(stat -c %s "$uimage" 2>/dev/null || echo 0)
+
+          # Smallest kernel partition across all taroko boards:
+          # F6005 / X100DG: k0 = 2240k = 2293760 bytes
+          smallest_k0=2293760
+
+          warnings=$(grep -c "warning:" /tmp/kernel-build.log 2>/dev/null || true)
+
+          {
+            echo "### Kernel build — realtek-luna / taroko (RLX/Lexra)"
+            echo
+            echo "| | |"
+            echo "|---|---:|"
+            [ -z "${TOOLCHAIN_SECONDS:-}" ] || echo "| toolchain (cached) | ${TOOLCHAIN_SECONDS} s |"
+            echo "| kernel build | ${KERNEL_SECONDS:-?} s |"
+            echo "| vmlinux | ${vmsize} bytes |"
+            if [ "$usize" -gt 0 ]; then
+              echo "| uImage | ${usize} bytes |"
+              echo "| smallest k0 (F6005) | ${smallest_k0} bytes |"
+              spare=$((smallest_k0 - usize))
+              echo "| spare | ${spare} bytes |"
+            fi
+            echo "| compiler warnings | ${warnings} |"
+            echo "| ISA audit (trap insns) | **passed** |"
+            echo
+            echo "RLX/Lexra mitigations in \`taroko/target.mk\`:"
+            echo '```'
+            echo "-fno-schedule-insns2  Lexra MDU erratum: load in div/mult shadow corrupts HI/LO"
+            echo "-mfix-rlx             branch delay slot + three-operand mul erratum"
+            echo "-mdivide-breaks       break 7 instead of teq for divide-by-zero (no trap insns)"
+            echo '```'
+            if [ "$warnings" -gt 0 ]; then
+              echo
+              echo "<details><summary>Warnings, most frequent first (40 at most)</summary>"
+              echo
+              echo '```'
+              { grep -o "[^ ]*: warning:.*" /tmp/kernel-build.log || true; } |
+                sort | uniq -c | sort -rn | sed -n "1,40p"
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "vmlinux $vmsize, uImage ${usize:-n/a}, $warnings warnings"
+
+          if [ "$usize" -gt 0 ] && [ "$usize" -gt "$smallest_k0" ]; then
+            echo "FAIL: uImage ($usize bytes) exceeds smallest k0 partition ($smallest_k0 bytes)" >&2
+            exit 1
+          fi
+
+      # ---- Full firmware (tags and manual runs only) ----
 
       - name: Build firmware
-        run: |
-          make -j$(nproc) V=s 2>&1 | tee build.log | tail -100
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: make -j$(nproc) V=s 2>&1 | tee build.log | tail -100
         continue-on-error: true
 
       - name: Retry build (single thread on failure)
-        if: failure()
+        if: failure() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
         run: make -j1 V=s 2>&1 | tail -200
 
       - name: Collect firmware artifacts
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p firmware
           cp -v bin/targets/realtek-luna/taroko/*-kernel.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/*-rootfs.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/*-sysupgrade.bin firmware/ 2>/dev/null || true
-          cp -v bin/targets/realtek-luna/taroko/*-initramfs-kernel.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/sha256sums firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/profiles.json firmware/ 2>/dev/null || true
           ls -lh firmware/
 
       - name: Upload firmware
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: realtek-luna-taroko-firmware-${{ github.sha }}
@@ -129,7 +385,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ github.sha }}
-          path: build.log
+          path: |
+            /tmp/kernel-build.log
+            build.log
           retention-days: 7
 
   release:
@@ -139,7 +397,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-
     steps:
       - name: Download firmware
         uses: actions/download-artifact@v4
