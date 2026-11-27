@@ -23,6 +23,7 @@ on:
     branches:
       - 'zte-f6005-*'
       - 'realtek-luna-*'
+      - 'ccr-*'
       - main
     paths:
       - '.github/workflows/build-realtek-luna.yml'
