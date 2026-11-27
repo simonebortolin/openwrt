@@ -138,6 +138,8 @@ jobs:
             build_dir/host
             build_dir/toolchain-*
           key: tc-taroko-${{ runner.os }}-${{ hashFiles('toolchain/**', 'tools/**', 'include/toolchain-build.mk', 'target/linux/realtek-luna/taroko/target.mk') }}
+          restore-keys: |
+            tc-taroko-${{ runner.os }}-
 
       - name: Update and install feeds
         run: |
