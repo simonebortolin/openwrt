@@ -24,6 +24,17 @@ endef
 # never flashed, so it is held to no partition: the TFTP boot is its only route to a unit.
 flash_kernel_size = $(if $(CONFIG_KERNEL_MEM_ALLOC_PROFILING)$(CONFIG_KERNEL_SLUB_DEBUG)$(CONFIG_KERNEL_PERF_EVENTS),,$(1))
 
+# CIG bootloader cramfs factory image: wraps the initramfs uImage inside a
+# big-endian cramfs named "UCIG" (the stock CIG firmware container format).
+# The stock ZTE web UI accepts this cramfs, extracts the kernel, and flashes it.
+define Build/cig-cramfs-factory
+	rm -rf $@.cramfs-root
+	mkdir -p $@.cramfs-root/bootimg
+	cp $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) $@.cramfs-root/uImage
+	mkfs.cramfs -N big -n UCIG $@.cramfs-root $@
+	rm -rf $@.cramfs-root
+endef
+
 include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

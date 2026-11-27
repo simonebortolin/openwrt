@@ -83,6 +83,10 @@ define Device/zte_f6005
   IMAGE/kernel.bin := append-kernel | check-size $$(KERNEL_SIZE)
   IMAGE/rootfs.bin := append-rootfs | check-size
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | check-size | sysupgrade-tar rootfs=$$$$@ | append-metadata
+  # Stock ZTE web UI factory image: initramfs kernel inside a big-endian cramfs
+  # named "UCIG". The whole cramfs must fit the 7 MiB Image A bank (7340032 B).
+  ARTIFACTS := factory.bin
+  ARTIFACT/factory.bin := cig-cramfs-factory | check-size 7340032
   # No WiFi; the 2.5GBase-T PHY (RTL8226B-VB) needs luna_eth.c's HiSGMII path.
   # gpon-provision: its SN, MAC and identity live in the config partition.
   DEVICE_PACKAGES := -iw gpon-provision
