@@ -26,13 +26,25 @@ flash_kernel_size = $(if $(CONFIG_KERNEL_MEM_ALLOC_PROFILING)$(CONFIG_KERNEL_SLU
 
 # CIG bootloader cramfs factory image: wraps the initramfs uImage inside a
 # big-endian cramfs named "UCIG" (the stock CIG firmware container format).
-# The stock ZTE web UI accepts this cramfs, extracts the kernel, and flashes it.
+# The CIG U-Boot validates a CRC-32/BZIP2 (poly 0x04C11DB7) stored as the
+# last 4 bytes (big-endian) of the image; without it the web UI rejects the
+# file. Algorithm from hack-gpon/hack-gpon-private cig_f6005_unlock/crc.c.
 define Build/cig-cramfs-factory
 	rm -rf $@.cramfs-root
 	mkdir -p $@.cramfs-root/bootimg
 	cp $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) $@.cramfs-root/uImage
 	mkfs.cramfs -N big -n UCIG $@.cramfs-root $@
 	rm -rf $@.cramfs-root
+	printf '%s\n' \
+		'import sys, struct' \
+		'd = open(sys.argv[1], "rb").read()' \
+		'c = 0xFFFFFFFF' \
+		'for b in d:' \
+		'    c ^= b << 24' \
+		'    for _ in range(8):' \
+		'        c = ((c << 1) ^ 0x04C11DB7 if c & 0x80000000 else c << 1) & 0xFFFFFFFF' \
+		'open(sys.argv[1], "ab").write(struct.pack(">I", c ^ 0xFFFFFFFF))' \
+		| python3 - $@
 endef
 
 include $(SUBTARGET).mk
