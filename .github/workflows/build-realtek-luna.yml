@@ -147,13 +147,19 @@ jobs:
       - name: Generate .config for realtek-luna/taroko
         run: |
           cat > .config <<'EOF'
-          CONFIG_TARGET_realtek-luna=y
-          CONFIG_TARGET_realtek-luna_taroko=y
+          CONFIG_TARGET_realtek_luna=y
+          CONFIG_TARGET_realtek_luna_taroko=y
           CONFIG_TARGET_MULTI_PROFILE=y
           CONFIG_TARGET_ALL_PROFILES=y
           CONFIG_TARGET_PER_DEVICE_ROOTFS=y
           EOF
           make defconfig
+          grep -q 'CONFIG_TARGET_realtek_luna=y' .config || {
+            echo "FAIL: realtek-luna target not selected after defconfig" >&2
+            echo "Active target:" >&2
+            grep 'CONFIG_TARGET_BOARD=' .config >&2
+            exit 1
+          }
 
       - name: Download sources
         run: make download -j8 V=s || make download -j1 V=s
