@@ -370,15 +370,19 @@ jobs:
       # ---- Full firmware ----
 
       - name: Build firmware
+        id: firmware-build
         run: |
           start=$(date +%s)
-          make -j$(nproc) V=s 2>&1 | tee build.log | tail -100
+          # -k (keep going): squashfs images may fail (rootfs not built yet)
+          # but ARTIFACTS like factory.bin only need the initramfs kernel.
+          make -j$(nproc) -k V=s 2>&1 | tee build.log | tail -100
           echo "FIRMWARE_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
         continue-on-error: true
 
       - name: Retry build (single thread on failure)
-        if: failure()
-        run: make -j1 V=s 2>&1 | tail -200
+        if: steps.firmware-build.outcome == 'failure'
+        run: make -j1 -k V=s 2>&1 | tail -200
+        continue-on-error: true
 
       - name: Collect firmware artifacts
         run: |
@@ -401,7 +405,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload build log on failure
-        if: failure()
+        if: steps.firmware-build.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ github.sha }}
