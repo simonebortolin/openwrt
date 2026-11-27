@@ -215,8 +215,10 @@ jobs:
           volatile int a = 42, b = 7;
           int main(void) { return a / b; }
           C
-          "$CC" -Os -mips32 -mdivide-breaks -static -o /tmp/div-test /tmp/div-test.c
-          "$OD" -d /tmp/div-test > /tmp/div-test.dis
+          # Compile to .o only — a static link pulls musl, whose abort()
+          # legitimately contains teq and would false-positive the check.
+          "$CC" -Os -mips32 -mdivide-breaks -c -o /tmp/div-test.o /tmp/div-test.c
+          "$OD" -d /tmp/div-test.o > /tmp/div-test.dis
 
           if grep -qw 'teq' /tmp/div-test.dis; then
             echo "FAIL: teq found — -mdivide-breaks did not replace it" >&2
@@ -242,8 +244,9 @@ jobs:
           }
           int main(void) { return test(3, 4, 5); }
           C
-          "$CC" -O2 -mips32 -mfix-rlx -static -o /tmp/rlx-test /tmp/rlx-test.c
-          "$OD" -d /tmp/rlx-test > /tmp/rlx-test.dis
+          # Compile to .o only — avoids musl noise in the disassembly.
+          "$CC" -O2 -mips32 -mfix-rlx -c -o /tmp/rlx-test.o /tmp/rlx-test.c
+          "$OD" -d /tmp/rlx-test.o > /tmp/rlx-test.dis
 
           # In MIPS disassembly the delay slot is the line right after a
           # branch/jump.  A three-operand mul there is the erratum.
