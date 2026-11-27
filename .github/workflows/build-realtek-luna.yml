@@ -178,10 +178,17 @@ jobs:
       - name: Find cross-compiler
         id: cc
         run: |
-          CC=$(find staging_dir/toolchain-* -name 'mips-openwrt-linux-musl-gcc' -type f | head -1)
-          OD=$(find staging_dir/toolchain-* -name 'mips-openwrt-linux-musl-objdump' -type f | head -1)
-          [ -n "$CC" ] || { echo "cross-gcc not found" >&2; exit 1; }
-          [ -n "$OD" ] || { echo "cross-objdump not found" >&2; exit 1; }
+          # The gcc binary may be a symlink or a wrapper script, so do not
+          # restrict to -type f.  The tuple is OPTIMIZE_FOR_CPU-openwrt-linux-LIBC.
+          CC=$(find staging_dir/toolchain-*/bin -name '*-openwrt-linux-*-gcc' ! -name '*.bak' 2>/dev/null | head -1)
+          if [ -z "$CC" ]; then
+            echo "cross-gcc not found; contents of staging_dir:" >&2
+            ls -R staging_dir/toolchain-*/bin/ 2>&1 | head -40 >&2
+            exit 1
+          fi
+          prefix="${CC%-gcc}"
+          OD="${prefix}-objdump"
+          [ -e "$OD" ] || { echo "cross-objdump not found at $OD" >&2; exit 1; }
           echo "cc=$CC" >> "$GITHUB_OUTPUT"
           echo "objdump=$OD" >> "$GITHUB_OUTPUT"
           "$CC" --version | head -1
