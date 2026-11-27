@@ -13,9 +13,8 @@
 #   patch-check       the RLX GCC patch still exists and is non-empty
 #   build             toolchain + compiler-flag validation + kernel + ISA audit
 #
-# The full firmware image (packages + rootfs) builds only on tags and manual
-# runs: nothing in it exercises the compiler errata beyond what the kernel
-# already covers, and the kernel is what boots first.
+# The full firmware image (packages + rootfs) builds on every run so that
+# initramfs images are always available for TFTP bring-up.
 
 name: realtek-luna compiler validation
 
@@ -365,21 +364,23 @@ jobs:
             exit 1
           fi
 
-      # ---- Full firmware (tags and manual runs only) ----
+      # ---- Full firmware ----
 
       - name: Build firmware
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        run: make -j$(nproc) V=s 2>&1 | tee build.log | tail -100
+        run: |
+          start=$(date +%s)
+          make -j$(nproc) V=s 2>&1 | tee build.log | tail -100
+          echo "FIRMWARE_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
         continue-on-error: true
 
       - name: Retry build (single thread on failure)
-        if: failure() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+        if: failure()
         run: make -j1 V=s 2>&1 | tail -200
 
       - name: Collect firmware artifacts
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p firmware
+          cp -v bin/targets/realtek-luna/taroko/*-initramfs-*.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/*-kernel.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/*-rootfs.bin firmware/ 2>/dev/null || true
           cp -v bin/targets/realtek-luna/taroko/*-sysupgrade.bin firmware/ 2>/dev/null || true
@@ -388,7 +389,6 @@ jobs:
           ls -lh firmware/
 
       - name: Upload firmware
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: realtek-luna-taroko-firmware-${{ github.sha }}
