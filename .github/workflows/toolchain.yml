@@ -11,6 +11,9 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - 'ccr-*'
+      - 'zte-f6005-*'
+      - 'realtek-luna-*'
 
 permissions:
   contents: read
