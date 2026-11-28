@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * ZTE F6005 (CIG G-97CP) GPON ONU — Realtek RTL9601D.
+ * ZTE F6005 (CIG G-97CP) GPON ONU — Realtek RTL9603D rev 3.
+ * The stock sys.cfg labels this "rtl9601d" but chipId reads RTL9603D rev 3
+ * (same die as RTL9601D / RTL9602C).
  * 32 MB DDR2, 16 MB SPI-NOR (CIG dual-bank cramfs), 1× 2.5GBase-T
- * (RTL8226B-VB PHY on HiSGMII), GPON MAC RTL8686.
+ * (RTL8226B-VB PHY on HiSGMII), BOSA CIG BOB30 (driver M02099).
  *
  * ODM: CIG (product code G-97CP); same plastic shell as the Nokia G-010G-T.
  * The 2.5GBase-T PHY (RTL8226B-VB) connects via HiSGMII to the SoC's
@@ -24,7 +26,7 @@
  * NIC blocks and never the PCIe host block, hence no "realtek,rtl9602c" root
  * compatible (pcie-luna keys on it). */
 / {
-	model = "ZTE F6005 (RTL9601D, console bring-up)";
+	model = "ZTE F6005 (RTL9603D rev 3, console bring-up)";
 	compatible = "zte,f6005", "realtek,rtl9601d";
 
 	aliases {
@@ -35,9 +37,9 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	/* Same SoC and RAM size as the X100DG: two spans with PON packet pool
-	 * holes.  Values from the X100DG's stock kernel (same 32 MB die); the
-	 * F6005's own MSTBASE_DS/US need verification from its live registers. */
+	/* 32 MB DDR2, two spans with PON packet pool holes.
+	 * MSTBASE_DS=0x016ff000, MSTBASE_US=0x01eff000 — confirmed identical
+	 * to the X100DG from the live F6005 registers. */
 	memory@0 {
 		device_type = "memory";
 		reg = <0x00000000 0x016ff000>, <0x01800000 0x006ff000>;
@@ -59,15 +61,11 @@
 		};
 	};
 
-	/* The internal BOSA (MENTECHOPTO-class): its laser is controlled by the
-	 * GPON MAC, not host GPIO — the same self-managed pattern as the V2801RGW.
-	 * No RTL8290B or GN25L95 laser calibration symbol in the stock firmware.
-	 *
-	 * TODO(bring-up): read the stock firmware's device_api gpio_pads to get the
-	 * realtek,gpio-pads values for this board.  Without them the PON analog
-	 * front end may not initialise correctly and the ONU will not range. */
+	/* BOSA: CIG BOB30 (driver M02099), self-managed by the GPON MAC — same
+	 * pattern as the V2801RGW.  No RTL8290B or GN25L95 laser calibration. */
 	pon-optics {
 		realtek,optics-self-managed;
+		realtek,gpio-pads = <1 2 17 18 33 34 36 49 50>;
 	};
 
 	#include "rtl9601d_f6005-omci-uni.dtsi"
@@ -79,9 +77,8 @@
  * the full HiSGMII + analog patch sequence is the next bring-up step. */
 &nic {
 	realtek,rx-ring-entries = <256>;
-	/* TODO(bring-up): verify the WAN MAC offset from this board's stock
-	 * nas0_0 MAC address (X100DG = +1, V2801RGW = +5). */
-	realtek,wan-mac-offset = <1>;
+	/* MAC1 5C:A4:F4:1F:6D:76, MAC2 …:7A → offset 4. */
+	realtek,wan-mac-offset = <4>;
 };
 
 /* CIG dual-bank 16 MiB SPI-NOR.  The CIG bootloader (CIG_bu.en_V3.09.15)
@@ -139,13 +136,11 @@
 };
 
 /* US then DS, as luna_gpon reads them.
- * TODO(bring-up): the LED indices and port map need to be read from the F6005's
- * stock firmware capture (board_01_led_init, pon_led_*_spec_type, the
- * "others"/LOS spec init).  The values below are from the X100DG (same SoC)
- * as a starting point and are LIKELY WRONG for this board. */
+ * LED mapping verified on hardware: PON (green, index 1, software-controlled),
+ * LOS (red, index 2, GPON alarm events).  POWER and LAN LEDs are
+ * hardware-controlled (no software index). */
 &gpon {
 	memory-region = <&pbo_us>, <&pbo_ds>;
-	realtek,pon-led = <6>;
-	realtek,los-led = <15>;
-	realtek,port-leds = <1 2>;
+	realtek,pon-led = <1>;
+	realtek,los-led = <2>;
 };
